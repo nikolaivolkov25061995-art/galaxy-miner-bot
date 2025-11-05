@@ -1,0 +1,170 @@
+import logging
+import sqlite3
+import random
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+
+# Настройка логов
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+TOKEN = "8531754531:AAEfhcjkA3nqMf78MSJ-tBLl4ImTOB9LiWs"
+
+# Система классов
+CLASSES = {
+    'warrior': {'name': '⚔️ Воин', 'stats': {'strength': 15, 'agility': 8, 'intelligence': 5}},
+    'mage': {'name': '🔮 Маг', 'stats': {'strength': 5, 'agility': 9, 'intelligence': 18}},
+    'hunter': {'name': '🏹 Охотник', 'stats': {'strength': 10, 'agility': 16, 'intelligence': 7}}
+}
+
+# База данных
+def init_db():
+    conn = sqlite3.connect('galaxy_bot.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS players
+                 (user_id INTEGER PRIMARY KEY, username TEXT, class TEXT,
+                  level INTEGER DEFAULT 1, exp INTEGER DEFAULT 0, energy INTEGER DEFAULT 100)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+class Player:
+    def __init__(self, user_id):
+        self.user_id = user_id
+        self.load()
+    
+    def load(self):
+        conn = sqlite3.connect('galaxy_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT * FROM players WHERE user_id = ?', (self.user_id,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            self.username, self.class_type, self.level, self.exp, self.energy = row[1:]
+            return True
+        return False
+    
+    def create(self, username, class_type):
+        conn = sqlite3.connect('galaxy_bot.db')
+        c = conn.cursor()
+        c.execute('INSERT INTO players (user_id, username, class, level, exp, energy) VALUES (?, ?, ?, ?, ?, ?)',
+                 (self.user_id, username, class_type, 1, 0, 100))
+        conn.commit()
+        conn.close()
+        self.username = username
+        self.class_type = class_type
+        self.level = 1
+        self.exp = 0
+        self.energy = 100
+    
+    def save(self):
+        conn = sqlite3.connect('galaxy_bot.db')
+        c = conn.cursor()
+        c.execute('UPDATE players SET level=?, exp=?, energy=? WHERE user_id=?',
+                 (self.level, self.exp, self.energy, self.user_id))
+        conn.commit()
+        conn.close()
+
+# Команды бота
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    player = Player(user.id)
+    
+    if player.load():
+        await update.message.reply_text(
+            f"🚀 С возвращением, {player.username}!\n"
+            f"🎯 Класс: {CLASSES[player.class_type]['name']}\n"
+            f"🏅 Уровень: {player.level} | ⚡ Энергия: {player.energy}\n\n"
+            "Команды:\n"
+            "/hunt - 🎯 Охота\n"
+            "/profile - 📊 Профиль"
+        )
+    else:
+        keyboard = [[InlineKeyboardButton(cls['name'], callback_data=f"class_{cid}")] 
+                   for cid, cls in CLASSES.items()]
+        await update.message.reply_text(
+            "🌌 Выбери свой класс:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+async def create_character(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user = query.from_user
+    class_id = query.data.split('_')[1]
+    
+    player = Player(user.id)
+    player.create(user.first_name, class_id)
+    
+    await query.edit_message_text(
+        f"🎉 Персонаж создан!\n"
+        f"🎯 Класс: {CLASSES[class_id]['name']}\n\n"
+        f"🚀 Используй /hunt для охоты!\n"
+        f"📊 Используй /profile для просмотра профиля"
+    )
+
+async def hunt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    player = Player(user.id)
+    
+    if not player.load():
+        await update.message.reply_text("Сначала создай персонажа через /start")
+        return
+    
+    if player.energy < 10:
+        await update.message.reply_text("❌ Недостаточно энергии!")
+        return
+    
+    player.energy -= 10
+    exp_gain = random.randint(15, 25)
+    player.exp += exp_gain
+    
+    if player.exp >= 100:
+        player.level += 1
+        player.exp = 0
+        level_msg = f"🎉 Достигнут уровень {player.level}!"
+    else:
+        level_msg = ""
+    
+    player.save()
+    
+    await update.message.reply_text(
+        f"✅ Охота успешна!\n"
+        f"💫 +{exp_gain} опыта\n"
+        f"{level_msg}\n"
+        f"⚡ Энергия: {player.energy}"
+    )
+
+async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    player = Player(user.id)
+    
+    if not player.load():
+        await update.message.reply_text("Сначала создай персонажа через /start")
+        return
+    
+    await update.message.reply_text(
+        f"📊 ПРОФИЛЬ {player.username}\n\n"
+        f"🎯 Класс: {CLASSES[player.class_type]['name']}\n"
+        f"🏅 Уровень: {player.level}\n"
+        f"💫 Опыт: {player.exp}/100\n"
+        f"⚡ Энергия: {player.energy}"
+    )
+
+# Запуск бота
+def main():
+    app = Application.builder().token(TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("hunt", hunt))
+    app.add_handler(CommandHandler("profile", profile))
+    app.add_handler(CallbackQueryHandler(create_character, pattern="^class_"))
+    
+    print("🚀 Galaxy Miner Bot запущен!")
+    app.run_polling()
+
+if __name__ == '__main__':
+    main()
